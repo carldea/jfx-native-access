@@ -29,13 +29,15 @@ There are other subtle things to keep an eye on that can get you in trouble is r
 
 == What's here?
 This repository contains a small macOS (arm64) prototype that demonstrates rendering a Metal layer
-on top of a JavaFX window using the Java Foreign Function & Memory API to call a native Objective-C
-renderer. The demo includes a native Metal renderer (renderer.m) built into `librenderer.dylib` and
+on top of a JavaFX window using the Java Foreign Function & Memory API to call a native Swift
+renderer. The demo includes a native Metal renderer (`Renderer.swift`) built into `librenderer.dylib` and
 a JavaFX front-end (`NativeMetalApp.java`) that binds to the native API.
 
-- `renderer.m` - Mac/Cocoa Objective-C dynamically link library.
+- `Renderer.swift` - Mac/Cocoa Swift dynamic library exposing a C ABI (`@c` functions).
+- `renderer.m` - original Objective-C implementation, kept for comparison (its build command is commented out in `build_lib.sh`).
 - `build_lib.sh` - shell script to compile library.
 - `NativeMetalApp.java` - JavaFX demo app with Panama FFI that talks to native library (`librenderer.dylib`)
+- `pom.xml` - plain Maven build that compiles the dylib and the Java source and packages both into a jar.
 
 
 == Platform
@@ -45,7 +47,7 @@ a JavaFX front-end (`NativeMetalApp.java`) that binds to the native API.
 == Requirements
 
 - macOS (Apple Silicon recommended)
-- Xcode Command Line Tools (clang/clang++ / make):
+- Xcode Command Line Tools with Swift 6.3 or later (`swiftc`, needed for the `@c` attribute):
 
 ```bash
 xcode-select --install
@@ -54,6 +56,7 @@ xcode-select --install
 - JDK 25 or later (required for the `java.lang.foreign` API and Linker usage). Shortened `main()` method and `IO.println`
 - JavaFX 26 or later (Now using Metal for MacOS)
 - jbang (optional — `NativeMetalApp.java` includes a jbang shebang and dependency directives)
+- Maven 3.9 or later (optional — to build the jar with `pom.xml`)
 - Homebrew (optional) for installing `jdk` / `jbang` / other tools
 
 == Build the native library
@@ -66,7 +69,9 @@ chmod +x build_lib.sh
 ./build_lib.sh
 ```
 
-This will compile `renderer.m` into `librenderer.dylib` using Metal and Cocoa frameworks.
+This will compile `Renderer.swift` into `librenderer.dylib` with `swiftc -emit-library`. The Metal, Cocoa and
+QuartzCore frameworks are linked automatically, and the Swift runtime ships with macOS (`/usr/lib/swift`),
+so the dylib loads in the JVM like any C library. Check the exported symbols with `nm -gU librenderer.dylib`.
 
 == Run the Java demo
 
@@ -86,7 +91,40 @@ chmod +x NativeMetalApp.java
 ./NativeMetalApp.java
 ```
 
-If you prefer to run without jbang, compile and run with `javac`/`java` making sure to include
+.Using Maven (builds a jar)
+
+```bash
+mvn clean package
+```
+
+The build runs `build_lib.sh` to compile `librenderer.dylib`, compiles `NativeMetalApp.java` and packages
+both into `target/jfx-native-access-1.0.0-SNAPSHOT.jar` (the dylib sits at the root of the jar). The JavaFX
+jars are copied to `target/lib`. Run the jar with:
+
+```bash
+java --module-path target/lib --add-modules javafx.controls \
+     --enable-native-access=ALL-UNNAMED,javafx.graphics \
+     --add-opens javafx.graphics/com.sun.glass.ui=ALL-UNNAMED \
+     -jar target/jfx-native-access-1.0.0-SNAPSHOT.jar
+```
+
+The build also produces a self-contained `target/jfx-native-access-1.0.0-SNAPSHOT-full.jar` that bundles
+the JavaFX classes and native libraries along with the app and the dylib. It needs no extra options:
+
+```bash
+java -jar target/jfx-native-access-1.0.0-SNAPSHOT-full.jar
+```
+
+Its entry point is `NativeMetalApp$Launcher`, a small class that does not extend `Application`: the
+JVM refuses to start an `Application` subclass directly when JavaFX is on the classpath. JavaFX prints
+an "Unsupported JavaFX configuration: classes were loaded from 'unnamed module'" warning in this mode;
+it is harmless.
+
+At startup the app uses `./librenderer.dylib` when it exists in the working directory (jbang and
+development runs); otherwise it extracts the copy bundled in the jar to a temporary file and loads it,
+so the jar can be run from any directory.
+
+If you prefer to run without jbang or Maven, compile and run with `javac`/`java` making sure to include
 the JavaFX modules and native-access runtime options shown in the source file. The jbang
 directives in the file handle those dependencies automatically when using jbang.
 
@@ -108,6 +146,12 @@ directives in the file handle those dependencies automatically when using jbang.
 ls -l librenderer.dylib
 ```
 
+- When running the Maven jar, check that the dylib was packaged:
+
+```bash
+unzip -l target/jfx-native-access-1.0.0-SNAPSHOT.jar | grep librenderer
+```
+
 - Ensure you are using a JDK that supports the `java.lang.foreign` API (JDK 25+). If using
 	macOS security/privacy prompts, allow the app to use the screen/window as needed.
 
@@ -120,14 +164,15 @@ ls -l librenderer.dylib
 	transparent overlays differs; prefer an in-process approach or use platform-specific windowing
 	APIs.
 - Cross-platform plan: create a small C ABI shim with the same exported functions (`init_metal_renderer`,
-	`update_renderer_bounds`, `render_frame`, `set_renderer_alpha`, `set_render_mode`, `update_rotation`)
+	`update_renderer_bounds`, `render_frame`, `set_renderer_alpha`, `set_render_mode`, `update_rotation`,
+	`destroy_metal_renderer`)
 	and provide per-platform implementations (Metal / Direct3D / Vulkan). Use the Panama Linker to
 	load the correct library per-OS at runtime.
 
 == Notes
 
 - This repo is a prototype or proof of concept. The native code intentionally performs UI/window operations on the
-	main thread via `dispatch_sync` / `execute_on_main_thread` helpers.
+	main thread via the `onMain` helper (`DispatchQueue.main.sync` + `MainActor.assumeIsolated`).
 - For production use consider error handling hardening, lifecycle management, and secure
 	permission handling for native access.
 

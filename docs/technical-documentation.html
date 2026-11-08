@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JavaFX + Metal Native Overlay: Technical Documentation</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --ink: #1f1e1c;
+    --quiet: #6b6963;
+    --rule: #e4e2dc;
+    --code-bg: #f3f2ee;
+    --accent: #2f7de1;
+    --th-bg: #f7f6f3;
+    /* Same font stacks as the Claude Docs viewer. Anthropic Sans/Mono are used when installed;
+       otherwise the system UI font is used, exactly as the viewer falls back. */
+    --font-sans: "Anthropic Sans", "Anthropic Sans Roman Fallback", ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: "Anthropic Mono", ui-monospace, "SF Mono", Monaco, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.6 var(--font-sans);
+  }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 56px 16px 96px;
+  }
+  h1 { font-size: 30px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; line-height: 1.3; margin: 48px 0 12px; padding-top: 8px; }
+  h3 { font-size: 16px; margin: 28px 0 8px; }
+  p, ul, ol { margin: 0 0 14px; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 4px 0; }
+  .byline { color: var(--quiet); font-size: 14px; margin-bottom: 32px; }
+  .byline time {
+    display: inline-block; padding: 1px 8px; border-radius: 6px;
+    background: var(--code-bg); color: var(--ink); font-size: 13px;
+  }
+  code {
+    font: 0.86em/1.4 var(--font-mono);
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+    overflow-wrap: anywhere;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 0 0 16px;
+  }
+  pre code { background: none; padding: 0; font-size: 13px; overflow-wrap: normal; }
+  .table-wrap { overflow-x: auto; margin: 4px 0 20px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    line-height: 1.45;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+  }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--rule); }
+  th { background: var(--th-bg); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  td:first-child code { white-space: nowrap; overflow-wrap: normal; }
+  figure { margin: 20px 0 16px; }
+  figure img { display: block; width: 100%; height: auto; }
+  figcaption { color: var(--quiet); font-size: 12.5px; text-align: center; margin-top: 6px; }
+  strong { font-weight: 600; }
+  footer { margin-top: 56px; color: var(--quiet); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>JavaFX + Metal Native Overlay: Technical Documentation</h1>
+<p class="byline"><time datetime="2026-11-08">2026-11-08</time></p>
+
+<h2 id="overview">Overview</h2>
+<p>The prototype draws GPU-rendered Metal content over part of a JavaFX window. It does this by placing a borderless, transparent, click-through native child window over the right pane and driving it from Java through the Foreign Function &amp; Memory (FFM) API. No JNI, SwingNode or JavaFX internals are involved in rendering. The only internal API used is a reflection call that fetches the NSWindow handle.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Component</th><th>Language</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>NativeMetalApp.java</code></td><td>Java 25+, JavaFX 26</td><td>UI, frame loop, layout sync, and the private <code>MetalRenderer</code> FFM facade</td></tr>
+<tr><td><code>Renderer.swift</code></td><td>Swift 6.3+</td><td>Metal device, pipelines, child window, C ABI exported with <code>@c</code></td></tr>
+<tr><td><code>librenderer.dylib</code></td><td>built artifact</td><td>Shared library loaded by <code>SymbolLookup.libraryLookup</code></td></tr>
+<tr><td><code>build_lib.sh</code></td><td>sh</td><td>Compiles the Swift file with <code>swiftc -emit-library</code></td></tr>
+<tr><td><code>renderer.m</code></td><td>Objective-C</td><td>Original implementation, kept for comparison, not built</td></tr>
+</tbody>
+</table></div>
+<p>Target platform: macOS on Apple Silicon (arm64, macOS 14+). The app runs as a single-file jbang script.</p>
+
+<h2 id="architecture">Architecture</h2>
+<figure>
+  <img src="images/architecture.svg" alt="Architecture: every native call crosses one Java class and one main-thread hop">
+  <figcaption>architecture · 3 layers, 6 components</figcaption>
+</figure>
+<p>Control flows down: JavaFX events reach the private <code>MetalRenderer</code>, which makes FFM downcalls into the Swift dylib. The dylib hops to the main thread and drives a child window stacked above the Glass window. Pixels never flow back into JavaFX. The two windows are composited by the macOS window server.</p>
+
+<h2 id="java-side">Java side: NativeMetalApp and MetalRenderer</h2>
+<p>All native access lives in one private nested class, <code>NativeMetalApp.MetalRenderer</code>, so the UI code never touches <code>MethodHandle</code>, <code>MemorySegment</code> or <code>Throwable</code>.</p>
+<h3>Application lifecycle</h3>
+<ol>
+<li><code>init()</code> builds a <code>MetalRenderer</code> from <code>./librenderer.dylib</code> (resolved against the working directory). The constructor opens the library with <code>SymbolLookup.libraryLookup(path, Arena.global())</code> and binds the 7 downcall handles. A missing symbol fails startup with <code>Native symbol not found: &lt;name&gt;</code>.</li>
+<li><code>start()</code> builds the UI, shows the stage, then in <code>Platform.runLater</code> reads the Glass NSWindow pointer and calls <code>renderer.attach(handle)</code>.</li>
+<li>An <code>AnimationTimer</code> runs on every JavaFX pulse: it syncs the pane bounds and renders one frame.</li>
+<li><code>stage.setOnHiding</code> calls <code>destroyRenderer()</code> (stop the timer, then <code>renderer.close()</code>). <code>stop()</code> calls it again, which is harmless because <code>close()</code> is idempotent.</li>
+</ol>
+<h3>MetalRenderer contract</h3>
+<ul>
+<li>It holds the opaque renderer pointer in <code>ctx</code>, and <code>isAttached()</code> means <code>ctx.address() != 0</code>.</li>
+<li>Every method other than <code>attach</code> does nothing until attach succeeds and again after <code>close()</code>. This protects Swift from slider or combo events that arrive before the overlay exists.</li>
+<li>Native errors are caught inside the class and printed. They never reach JavaFX handlers.</li>
+<li>Calls use <code>invokeExact</code> with exact static types, so the JIT can inline the downcalls. Nothing is boxed on the per-frame path.</li>
+</ul>
+<h3>Bindings</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Java method</th><th>C symbol</th><th>Signature (C view)</th><th>Called from</th></tr></thead>
+<tbody>
+<tr><td><code>attach(long)</code></td><td><code>init_metal_renderer</code></td><td><code>void* (void* nsWindow)</code></td><td><code>Platform.runLater</code> after show</td></tr>
+<tr><td><code>updateBounds(x, y, w, h, clip)</code></td><td><code>update_renderer_bounds</code></td><td><code>void (void*, double×4, int32)</code></td><td>Every pulse, clip checkbox</td></tr>
+<tr><td><code>renderFrame()</code></td><td><code>render_frame</code></td><td><code>void (void*)</code></td><td>Every pulse</td></tr>
+<tr><td><code>setAlpha(float)</code></td><td><code>set_renderer_alpha</code></td><td><code>void (void*, float)</code></td><td>Opacity slider</td></tr>
+<tr><td><code>setRenderMode(int)</code></td><td><code>set_render_mode</code></td><td><code>void (void*, int32)</code></td><td>2D/3D combo</td></tr>
+<tr><td><code>rotate(dx, dy)</code></td><td><code>update_rotation</code></td><td><code>void (void*, float, float)</code></td><td>Mouse drag on right pane</td></tr>
+<tr><td><code>close()</code></td><td><code>destroy_metal_renderer</code></td><td><code>void (void*)</code></td><td>Stage hiding, <code>stop()</code></td></tr>
+</tbody>
+</table></div>
+<p><strong>Getting the NSWindow</strong>: <code>getGlassWindowHandle()</code> uses reflection on <code>com.sun.glass.ui.Window.getWindows()</code> and calls <code>getNativeWindow()</code> on the first entry. That is why the script needs <code>--add-opens javafx.graphics/com.sun.glass.ui=ALL-UNNAMED</code>.</p>
+
+<h2 id="native-side">Native side: Renderer.swift</h2>
+<p>The dylib exports 7 C functions with Swift 6.3's <code>@c(name)</code> attribute. Each one hops to the AppKit main thread and forwards the call to a <code>@MainActor</code> Swift class, also named <code>MetalRenderer</code>.</p>
+<h3>Pointer ownership</h3>
+<ul>
+<li><code>init_metal_renderer</code> wraps the incoming NSWindow pointer with <code>Unmanaged.takeUnretainedValue()</code> (Glass owns it). It returns <code>Unmanaged.passRetained(renderer).toOpaque()</code>, so the Java side holds +1 on the renderer.</li>
+<li>The other calls use <code>takeUnretainedValue()</code>. <code>destroy_metal_renderer</code> calls <code>tearDown()</code> and then <code>release()</code>, which drops that +1.</li>
+<li>A null pointer is ignored by every export (<code>guard let rendererPtr else { return }</code>). If init fails it logs through <code>NSLog</code> and returns null.</li>
+</ul>
+<h3>Threading</h3>
+<p><code>onMain { }</code> runs the body inline when the caller is already on the main thread, and otherwise uses <code>DispatchQueue.main.sync</code>. On macOS the JavaFX Application Thread is the AppKit main thread, so in practice every call takes the inline path. Pointers cross the hop as <code>Int</code> bit patterns so the closures stay <code>Sendable</code> under Swift 6 strict concurrency.</p>
+<h3>What init builds</h3>
+<ol>
+<li><code>MTLCreateSystemDefaultDevice()</code> plus a command queue.</li>
+<li>A shader library compiled at runtime from the embedded MSL source string: <code>vertexShader2D</code>, <code>vertexShader3D</code> and a shared <code>fragmentShader</code> that passes vertex colour through.</li>
+<li>Two pipeline states, both <code>bgra8Unorm</code>. The 2D one has no vertex buffer (the 3 vertices are hard-coded in the shader). The 3D one uses a vertex descriptor matching <code>Vertex3D</code> (float3 position plus float4 colour, stride 32).</li>
+<li>A shared-storage vertex buffer of 24 vertices: a triangular prism (2 end caps, 3 quad sides).</li>
+<li>A borderless <code>NSWindow</code> with a clear background and <code>ignoresMouseEvents = true</code>, whose content view is backed by a non-opaque <code>CAMetalLayer</code>. It is added with <code>parentWindow.addChildWindow(child, ordered: .above)</code>, so it moves with the JavaFX window.</li>
+</ol>
+<h3>Bounds and clipping (<code>updateBounds</code>)</h3>
+<p>It converts JavaFX scene coordinates (top-left origin) to Cocoa screen coordinates (bottom-left origin) using the parent's content rect: <code>cocoaY = parent.y + parent.height - (y + h)</code>. Then it sets the child window frame and the layer frame.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>clipMode</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td>0 (default)</td><td><code>cornerRadius = 12</code> on the top-right corner only (<code>layerMaxXMinYCorner</code>), <code>masksToBounds</code></td></tr>
+<tr><td>1</td><td>New <code>CAShapeLayer</code> ellipse mask fitted to the layer bounds</td></tr>
+</tbody>
+</table></div>
+<h3>Per-frame render (<code>renderFrame</code>, inside <code>autoreleasepool</code>)</h3>
+<ol>
+<li>Get <code>nextDrawable()</code> and a command buffer.</li>
+<li>Advance <code>animationPhase</code> by 0.02 and clear to a pulsing dark purple whose alpha is <code>globalAlpha</code> (the opacity slider, default 0.4).</li>
+<li>In mode 0, draw the 2D triangle. In mode 1, build MVP = perspective(60°, aspect, 0.1, 10) × view(z = -2) × rotation(rx, ry), pass it with <code>setVertexBytes</code> at index 1, and draw 24 vertices.</li>
+<li>Present and commit. Nothing waits for the GPU.</li>
+</ol>
+<p>Drag rotation accumulates <code>rotationY += dx × 0.01</code> and <code>rotationX += dy × 0.01</code> radians per pixel.</p>
+
+<h2 id="runtime-flows">Runtime flows</h2>
+<figure>
+  <img src="images/runtime-flows.svg" alt="Runtime sequence: teardown runs on hiding, before Glass frees the window">
+  <figcaption>runtime sequence · 4 flows</figcaption>
+</figure>
+<p>All four flows run on a single thread. On macOS the JavaFX Application Thread is the AppKit main thread, so each <code>onMain</code> hop runs inline. Input calls only change Swift state (<code>globalAlpha</code>, <code>renderMode</code>, <code>rotationX/Y</code>), and the next pulse picks it up.</p>
+<p><strong>Why teardown runs on hiding.</strong> The child window is attached to the Glass NSWindow. If the renderer were destroyed in <code>Application.stop()</code>, Glass would already have released its window, and <code>removeChildWindow</code> would touch freed memory. That was the crash at exit fixed in commit <code>cb3c636</code>. Destroying the renderer in <code>setOnHiding</code> runs while the parent still exists, and the later <code>stop()</code> call finds <code>ctx</code> already null and does nothing.</p>
+
+<h2 id="build-and-run">Build and run</h2>
+<p>You need Xcode Command Line Tools with Swift 6.3+, JDK 25+ and jbang. Then build the library and run the script from the project root:</p>
+<pre><code>./build_lib.sh            # swiftc -emit-library -O -swift-version 6 -target arm64-apple-macos14.0
+jbang NativeMetalApp.java # or ./NativeMetalApp.java via the shebang</code></pre>
+<p>The jbang header carries everything the JVM needs:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Directive</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><code>//DEPS org.openjfx:javafx-controls:26.0.1:mac-aarch64</code></td><td>JavaFX 26 with the macOS arm64 natives</td></tr>
+<tr><td><code>--enable-native-access=ALL-UNNAMED,javafx.graphics</code></td><td>Allows FFM downcalls without warnings or errors</td></tr>
+<tr><td><code>--add-opens javafx.graphics/com.sun.glass.ui=ALL-UNNAMED</code></td><td>Reflection access to <code>Window.getNativeWindow()</code></td></tr>
+</tbody>
+</table></div>
+<p>The Swift runtime ships with macOS (<code>/usr/lib/swift</code>), so the dylib loads like any C library. Run <code>nm -gU librenderer.dylib</code> to check that all 7 symbols are exported.</p>
+<h3>Troubleshooting</h3>
+<ul>
+<li><code>Native symbol not found: &lt;name&gt;</code>: the dylib is stale or was built from other sources. Rerun <code>build_lib.sh</code>.</li>
+<li>Library not found: the path is resolved against the working directory, so run from the project root.</li>
+<li>Status stays "Unbound": either the Glass handle lookup failed (look for <code>Could not resolve native Glass handle</code> on stderr) or Metal init failed (look for the <code>NSLog</code> line in Console.app or stderr).</li>
+</ul>
+
+<h2 id="enhancements">Enhancement opportunities</h2>
+<p>The highest-value fixes are Retina sharpness, change-only bounds sync and a depth buffer for 3D. Each is a small, local change. The list is ordered by value to the demo, and effort is a rough estimate (S under 1 hour, M a few hours, L a day or more).</p>
+<div class="table-wrap"><table>
+<thead><tr><th class="num">#</th><th>Enhancement</th><th>Why it matters</th><th>Where</th><th>Effort</th></tr></thead>
+<tbody>
+<tr><td class="num">1</td><td>Set <code>metalLayer.contentsScale = parentWindow.backingScaleFactor</code> (and refresh it on screen change)</td><td><code>contentsScale</code> defaults to 1, so on a Retina display the drawable renders at half resolution and looks soft</td><td>Swift <code>init</code>, <code>updateBounds</code></td><td>S</td></tr>
+<tr><td class="num">2</td><td>Sync bounds only when they change</td><td>Each pulse calls <code>setFrame(display: true)</code>, and in clip mode 1 it allocates a new <code>CAShapeLayer</code> per frame</td><td>Java <code>syncNativeOverlayBounds</code> (cache last values) or Swift <code>updateBounds</code> (early return)</td><td>S</td></tr>
+<tr><td class="num">3</td><td>Add a depth attachment and <code>MTLDepthStencilState</code>, or back-face culling</td><td>The prism has no depth test, so faces draw in submit order and the far side shows through while it rotates</td><td>Swift pipeline 3D, <code>renderFrame</code></td><td>M</td></tr>
+<tr><td class="num">4</td><td>Time-based animation</td><td><code>animationPhase += 0.02</code> per frame runs twice as fast on a 120 Hz ProMotion display. Pass <code>now</code> from <code>AnimationTimer</code> or use <code>CACurrentMediaTime()</code></td><td>Swift <code>renderFrame</code></td><td>S</td></tr>
+<tr><td class="num">5</td><td>Keep frame pacing off the FX thread</td><td><code>nextDrawable()</code> blocks when all drawables are in use (up to 1 s), freezing JavaFX. Options: <code>CAMetalDisplayLink</code> (macOS 14+) on the native side, or a render thread</td><td>Swift, Java timer</td><td>L</td></tr>
+<tr><td class="num">6</td><td>Match the Glass window to the stage</td><td><code>getWindows().get(0)</code> picks the first Glass window, which is wrong once a dialog or second stage exists</td><td>Java <code>getGlassWindowHandle</code></td><td>S</td></tr>
+<tr><td class="num">7</td><td>Report init failure to the UI</td><td>A failed attach only logs. Show a reason in <code>statusText</code>, for example by returning an error code or message from native</td><td>Java <code>attach</code>, Swift init</td><td>S</td></tr>
+<tr><td class="num">8</td><td>Precompile shaders to a <code>.metallib</code></td><td><code>makeLibrary(source:)</code> compiles MSL on every launch and hides shader errors until runtime</td><td><code>build_lib.sh</code>, Swift init</td><td>M</td></tr>
+<tr><td class="num">9</td><td>Locate the dylib robustly</td><td>The path depends on the working directory. Use a system property with the script directory as fallback</td><td>Java <code>init</code></td><td>S</td></tr>
+<tr><td class="num">10</td><td>One C header as the ABI source of truth</td><td>Java descriptors and Swift signatures are kept in sync by hand. A <code>renderer.h</code> checked by a test, or used with <code>jextract</code>, prevents drift (jextract would add generated files, so the single-file rule would need relaxing)</td><td>New <code>renderer.h</code></td><td>M</td></tr>
+<tr><td class="num">11</td><td>Fix small UI issues</td><td><code>opacityLabel</code> is never added to the pane, the "Interact" button does nothing, and the title still says "JavaFX 25"</td><td>Java <code>start</code></td><td>S</td></tr>
+<tr><td class="num">12</td><td>Handle window state changes</td><td>Minimise, full screen and moving to another Space are untested for the child window</td><td>Swift, manual tests</td><td>M</td></tr>
+<tr><td class="num">13</td><td>Port to Windows and Linux</td><td>The README plan: same 7-function C ABI, one per-OS library (Direct3D, Vulkan), chosen at runtime by the Java side</td><td>New native libraries</td><td>L</td></tr>
+</tbody>
+</table></div>
+<p>One side note on design: settings such as alpha, mode and rotation could live in a small shared <code>MemorySegment</code> struct that Swift reads each frame. That would replace four downcalls with plain memory writes. It only pays off if the calls show up in a profile.</p>
+
+<footer>Diagrams: <code>images/architecture.svg</code>, <code>images/runtime-flows.svg</code>. The Markdown version of this page is <code>technical-documentation.md</code>.</footer>
+
+</main>
+</body>
+</html>
