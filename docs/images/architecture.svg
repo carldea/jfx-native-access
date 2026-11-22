@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 560" width="760" height="560" role="img" aria-label="Every native call crosses one Java class and one main-thread hop">
+  <title>Every native call crosses one Java class and one main-thread hop</title>
+  <style>
+    svg { --ink: #1f1e1c; --quiet: #6b6963; --edge: #b9b6ac; --tint: #f0efeb; --accent: #2f7de1; font-family: "Anthropic Sans", "Anthropic Sans Roman Fallback", ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .ink { fill: var(--ink); }
+    .quiet { fill: var(--quiet); }
+    .title { font-size: 15px; font-weight: 600; }
+    .name { font-size: 13px; font-weight: 600; }
+    .line { font-size: 11.5px; }
+    .layer { fill: var(--tint); stroke: var(--edge); stroke-width: 1; }
+    .box { fill: none; stroke: var(--edge); stroke-width: 1.25; }
+    .box-accent { fill: var(--accent); fill-opacity: 0.12; stroke: var(--accent); stroke-width: 2; }
+    .conn { fill: none; stroke: var(--edge); stroke-width: 1.25; }
+    .arrowhead { fill: var(--edge); }
+  </style>
+  <defs>
+    <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path class="arrowhead" d="M0 0L10 5L0 10z"/>
+    </marker>
+  </defs>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+
+  <text class="ink title" x="24" y="32">Every native call crosses one Java class and one main-thread hop</text>
+
+  <!-- Layers -->
+  <rect class="layer" x="24" y="56" width="712" height="128" rx="8"/>
+  <text class="quiet name" x="40" y="78">JVM · NativeMetalApp.java</text>
+  <rect class="layer" x="24" y="232" width="712" height="128" rx="8"/>
+  <text class="quiet name" x="40" y="254">librenderer.dylib · Renderer.swift</text>
+  <rect class="layer" x="24" y="408" width="712" height="128" rx="8"/>
+  <text class="quiet name" x="720" y="430" text-anchor="end">macOS · AppKit and Metal</text>
+
+  <!-- Connectors -->
+  <g class="conn">
+    <path d="M352 132H408" marker-end="url(#arch-arrow)"/>
+    <path d="M564 168V272" marker-end="url(#arch-arrow)"/>
+    <path d="M408 308H352" marker-end="url(#arch-arrow)"/>
+    <path d="M196 344V448" marker-end="url(#arch-arrow)"/>
+    <path d="M352 484H408" marker-end="url(#arch-arrow)"/>
+  </g>
+
+  <!-- JavaFX UI -->
+  <rect class="box" x="40" y="96" width="312" height="72" rx="8"/>
+  <text class="ink name" x="52" y="120">JavaFX UI (NativeMetalApp)</text>
+  <text class="quiet line" x="52" y="140">Slider, combo, checkbox, mouse drag</text>
+  <text class="quiet line" x="52" y="156">AnimationTimer: sync bounds, render frame</text>
+
+  <!-- MetalRenderer facade (accent) -->
+  <rect class="box-accent" x="408" y="96" width="312" height="72" rx="8"/>
+  <text class="ink name" x="420" y="120">MetalRenderer (private nested class)</text>
+  <text class="ink line" x="420" y="140">7 MethodHandles + opaque ctx pointer</text>
+  <text class="ink line" x="420" y="156">No-op until attached, errors caught</text>
+
+  <!-- C ABI -->
+  <rect class="box" x="408" y="272" width="312" height="72" rx="8"/>
+  <text class="ink name" x="420" y="296">C ABI exports (@c)</text>
+  <text class="quiet line" x="420" y="316">init_metal_renderer, render_frame,</text>
+  <text class="quiet line" x="420" y="332">update_renderer_bounds and 4 more</text>
+
+  <!-- Swift MetalRenderer -->
+  <rect class="box" x="40" y="272" width="312" height="72" rx="8"/>
+  <text class="ink name" x="52" y="296">Swift MetalRenderer (@MainActor)</text>
+  <text class="quiet line" x="52" y="316">onMain hop, inline on the FX thread</text>
+  <text class="quiet line" x="52" y="332">Device, 2 pipelines, prism vertex buffer</text>
+
+  <!-- Child window -->
+  <rect class="box" x="40" y="448" width="312" height="72" rx="8"/>
+  <text class="ink name" x="52" y="472">Child NSWindow + CAMetalLayer</text>
+  <text class="quiet line" x="52" y="492">Borderless, clear, ignores mouse events</text>
+  <text class="quiet line" x="52" y="508">Draws the 2D triangle or 3D prism</text>
+
+  <!-- Glass window -->
+  <rect class="box" x="408" y="448" width="312" height="72" rx="8"/>
+  <text class="ink name" x="420" y="472">Glass NSWindow (owned by JavaFX)</text>
+  <text class="quiet line" x="420" y="492">Hosts the JavaFX scene</text>
+  <text class="quiet line" x="420" y="508">Pointer read by reflection for attach()</text>
+
+  <!-- Edge labels -->
+  <text class="quiet line" x="380" y="124" text-anchor="middle">calls</text>
+  <text class="quiet line" x="552" y="212" text-anchor="end">FFM downcalls (invokeExact)</text>
+  <text class="quiet line" x="184" y="390" text-anchor="end">creates</text>
+  <text class="quiet line" x="380" y="476" text-anchor="middle">child of</text>
+</svg>
